@@ -151,7 +151,8 @@ namespace Gsplat
             cs.Dispatch(m_kernelInitOrder, (int)GsplatUtils.DivRoundUp(res.UploadedCount, 1024), 1, 1);
         }
 
-        public override void LoadFromPly(string plyPath, ProgressCallback progressCallback = null)
+        public override void LoadFromPly(string plyPath, ProgressCallback progressCallback = null,
+            SourceCoordinates sourceCoordinates = SourceCoordinates.RUF)
         {
             using var fs = new FileStream(plyPath, FileMode.Open, FileAccess.Read);
             // C# arrays and NativeArrays make it hard to have a "byte" array larger than 2GB :/
@@ -170,6 +171,13 @@ namespace Gsplat
                 plyInfo.ScaleOffset == -1 || plyInfo.RotationOffset == -1)
                 throw new NotSupportedException("missing required properties in PLY header");
 
+            // Decompose source frame into per-axis sign flips relative to Unity (RUF).
+            var (posXSign, posYSign, posZSign) = GsplatUtils.AxisSigns(sourceCoordinates);
+            // Quaternion conjugation: each imaginary component gets the product of the OTHER two axis signs.
+            float rotXSign = posYSign * posZSign;
+            float rotYSign = posXSign * posZSign;
+            float rotZSign = posXSign * posYSign;
+
             Allocate();
             var buffer = new byte[plyInfo.PropertyCount * sizeof(float)];
             var shBandData = new float[7 * 3]; // max band 3: 7 coeffs × 3 channels; reused each splat
@@ -186,9 +194,10 @@ namespace Gsplat
                     var bandSize = j * 2 + 1;
                     for (int k = 0; k < bandSize; k++)
                     {
-                        shBandData[k * 3]     = properties[shReadOffset + k + plyInfo.SHOffset];
-                        shBandData[k * 3 + 1] = properties[shReadOffset + k + plyInfo.SHOffset + shCoeffs];
-                        shBandData[k * 3 + 2] = properties[shReadOffset + k + plyInfo.SHOffset + shCoeffs * 2];
+                        float sign = GsplatUtils.ShSign(sourceCoordinates, j, k);
+                        shBandData[k * 3]     = sign * properties[shReadOffset + k + plyInfo.SHOffset];
+                        shBandData[k * 3 + 1] = sign * properties[shReadOffset + k + plyInfo.SHOffset + shCoeffs];
+                        shBandData[k * 3 + 2] = sign * properties[shReadOffset + k + plyInfo.SHOffset + shCoeffs * 2];
                     }
 
                     if (j == 1) PackSH1(shBandData, PackedSH1.AsSpan((int)i * 2, 2));
@@ -205,9 +214,9 @@ namespace Gsplat
                     properties[plyInfo.OpacityOffset]);
 
                 var position = new Vector3(
-                    properties[plyInfo.PositionOffset],
-                    properties[plyInfo.PositionOffset + 1],
-                    properties[plyInfo.PositionOffset + 2]);
+                    posXSign * properties[plyInfo.PositionOffset],
+                    posYSign * properties[plyInfo.PositionOffset + 1],
+                    posZSign * properties[plyInfo.PositionOffset + 2]);
 
                 if (i == 0) Bounds = new Bounds(position, Vector3.zero);
                 else Bounds.Encapsulate(position);
@@ -217,10 +226,11 @@ namespace Gsplat
                     properties[plyInfo.ScaleOffset + 1],
                     properties[plyInfo.ScaleOffset + 2]);
 
-                var rotation = new Quaternion(properties[plyInfo.RotationOffset],
-                    properties[plyInfo.RotationOffset + 1],
-                    properties[plyInfo.RotationOffset + 2],
-                    properties[plyInfo.RotationOffset + 3]);
+                var rotation = new Quaternion(
+                    properties[plyInfo.RotationOffset],
+                    rotXSign * properties[plyInfo.RotationOffset + 1],
+                    rotYSign * properties[plyInfo.RotationOffset + 2],
+                    rotZSign * properties[plyInfo.RotationOffset + 3]);
 
                 PackedSplats[i] = PackSplat(color, position, scale, rotation);
                 progressCallback?.Invoke("Reading vertices", i / (float)plyInfo.VertexCount);

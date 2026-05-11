@@ -14,6 +14,14 @@ namespace Gsplat.Editor
     {
         public CompressionMode Compression = CompressionMode.Spark;
 
+        [Tooltip("The coordinate frame the source asset was authored in.\n\n" +
+                 "Positions, rotations, and SH coefficients are converted to Unity (RUF) at import time.\n\n" +
+                 "RUB  — standard output of 3DGS training tools, gsplat, nerfstudio, and Niantic SPZ.\n" +
+                 "RDF  — OpenCV, COLMAP camera convention.\n" +
+                 "LUF  — GLB, glTF.\n" +
+                 "RUF  — already in Unity space; no conversion applied.")]
+        public SourceCoordinates SourceCoordinates = SourceCoordinates.RUB;
+
         public override void OnImportAsset(AssetImportContext ctx)
         {
             GsplatAsset gsplatAsset = Compression switch
@@ -25,8 +33,9 @@ namespace Gsplat.Editor
 
             try
             {
-                gsplatAsset.LoadFromPly(ctx.assetPath, (info, progress) => EditorUtility.DisplayProgressBar(
-                    "Importing Gsplat Asset", info, progress));
+                gsplatAsset.LoadFromPly(ctx.assetPath,
+                    (info, progress) => EditorUtility.DisplayProgressBar("Importing Gsplat Asset", info, progress),
+                    SourceCoordinates);
             }
             catch (Exception e)
             {
