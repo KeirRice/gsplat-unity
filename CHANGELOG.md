@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added support for the Niantic [SPZ](https://github.com/nianticlabs/spz) format (`.spz`). The `GsplatImporter` now also handles `.spz` assets, decoding into the existing Spark or Uncompressed pipelines. SPZ versions 1–3 are supported (gzip); v4 (ZSTD) raises a clear `NotSupportedException`. A binary import cache under `Library/GsplatCache/` skips the decode/pack step on subsequent reimports.
+
+- Added a `SourceCoordinates` option to `GsplatImporter`. Positions, rotation quaternions, and SH coefficients are converted from the source frame (e.g. RUB for 3DGS / SPZ) to Unity (RUF) at import time.
+
 - Added an activatable refresh rate slider, running the sorting every Nth frame and the cutouts computation every Nth sort. Force a sort computation when a camera moves or rotates past a customizable threshold. ([#20](https://github.com/wuyize25/gsplat-unity/pull/20) by [@Arthur-Aillet](https://github.com/Arthur-Aillet))
 
 - `GsplatCutout` component to edit the Gaussian Splattings dynamically. A compute shader prepass is done before rendering that creates the order buffer, ignoring splats contained in cutout shapes and removing them from further calculations. ([#19](https://github.com/wuyize25/gsplat-unity/pull/19) by [@Arthur-Aillet](https://github.com/Arthur-Aillet))
