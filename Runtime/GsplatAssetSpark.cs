@@ -172,6 +172,7 @@ namespace Gsplat
 
             Allocate();
             var buffer = new byte[plyInfo.PropertyCount * sizeof(float)];
+            var shBandData = new float[7 * 3]; // max band 3: 7 coeffs × 3 channels; reused each splat
             for (uint i = 0; i < plyInfo.VertexCount; i++)
             {
                 var readBytes = fs.Read(buffer);
@@ -183,20 +184,16 @@ namespace Gsplat
                 for (int j = 1, shReadOffset = 0; j <= SHBands; j++)
                 {
                     var bandSize = j * 2 + 1;
-                    var shBandData = new float[bandSize * 3]; // x3 for rgb
                     for (int k = 0; k < bandSize; k++)
                     {
-                        shBandData[k * 3] = properties[shReadOffset + k + plyInfo.SHOffset];
+                        shBandData[k * 3]     = properties[shReadOffset + k + plyInfo.SHOffset];
                         shBandData[k * 3 + 1] = properties[shReadOffset + k + plyInfo.SHOffset + shCoeffs];
                         shBandData[k * 3 + 2] = properties[shReadOffset + k + plyInfo.SHOffset + shCoeffs * 2];
                     }
 
-                    if (j == 1)
-                        Array.Copy(PackSH1(shBandData), 0, PackedSH1, i * 2, 2);
-                    if (j == 2)
-                        Array.Copy(PackSH2(shBandData), 0, PackedSH2, i * 4, 4);
-                    if (j == 3)
-                        Array.Copy(PackSH3(shBandData), 0, PackedSH3, i * 4, 4);
+                    if (j == 1) PackSH1(shBandData, PackedSH1.AsSpan((int)i * 2, 2));
+                    if (j == 2) PackSH2(shBandData, PackedSH2.AsSpan((int)i * 4, 4));
+                    if (j == 3) PackSH3(shBandData, PackedSH3.AsSpan((int)i * 4, 4));
 
                     shReadOffset += bandSize;
                 }
@@ -370,10 +367,9 @@ namespace Gsplat
         /// Encode an array of 9 signed RGB SH1 coefficients (clamped to [-1,1]) into
         /// a pair of uint32 values, where each coefficient is stored as a sint7
         /// </summary>
-        static uint[] PackSH1(float[] sh)
+        protected static void PackSH1(float[] sh, Span<uint> output)
         {
-            uint[] packedSH = new uint[2];
-
+            output.Clear();
             for (var i = 0; i < 9; ++i)
             {
                 float shScaled = sh[i] * 63.0f;
@@ -386,16 +382,14 @@ namespace Gsplat
                 int wordStart = (int)Math.Floor((double)(bitStart / 32));
                 int bitOffset = bitStart - wordStart * 32;
                 uint firstWord = (uint)((sint7SH << bitOffset) & 0xffffffff);
-                packedSH[wordStart] |= firstWord;
+                output[wordStart] |= firstWord;
 
                 if (bitEnd > wordStart * 32 + 32)
                 {
                     uint secondWord = ((uint)sint7SH >> (32 - bitOffset)) & 0xffffffff;
-                    packedSH[wordStart + 1] |= secondWord;
+                    output[wordStart + 1] |= secondWord;
                 }
             }
-
-            return packedSH;
         }
 
         static uint PackSint8Bytes(float b0, float b1, float b2, float b3)
@@ -417,14 +411,12 @@ namespace Gsplat
         /// Encode an array of 15 signed RGB SH2 coefficients (clamped to [-1,1]) into
         /// an array of 4 uint32 values, where each coefficient is stored as a sint8.
         /// </summary>
-        static uint[] PackSH2(float[] sh)
+        protected static void PackSH2(float[] sh, Span<uint> output)
         {
-            uint[] packedSH = new uint[4];
-            packedSH[0] = PackSint8Bytes(sh[0], sh[1], sh[2], sh[3]);
-            packedSH[1] = PackSint8Bytes(sh[4], sh[5], sh[6], sh[7]);
-            packedSH[2] = PackSint8Bytes(sh[8], sh[9], sh[10], sh[11]);
-            packedSH[3] = PackSint8Bytes(sh[12], sh[13], sh[14], 0);
-            return packedSH;
+            output[0] = PackSint8Bytes(sh[0], sh[1], sh[2], sh[3]);
+            output[1] = PackSint8Bytes(sh[4], sh[5], sh[6], sh[7]);
+            output[2] = PackSint8Bytes(sh[8], sh[9], sh[10], sh[11]);
+            output[3] = PackSint8Bytes(sh[12], sh[13], sh[14], 0);
         }
 
         /// <summary>
@@ -433,10 +425,9 @@ namespace Gsplat
         /// Encode an array of 21 signed RGB SH3 coefficients (clamped to [-1,1]) into
         /// an array of 4 uint32 values, where each coefficient is stored as a sint6.
         /// </summary>
-        static uint[] PackSH3(float[] sh)
+        protected static void PackSH3(float[] sh, Span<uint> output)
         {
-            uint[] packedSH = new uint[4];
-
+            output.Clear();
             for (var i = 0; i < 21; ++i)
             {
                 float shScaled = sh[i] * 31.0f;
@@ -449,15 +440,13 @@ namespace Gsplat
                 int bitOffset = bitStart - wordStart * 32;
                 uint firstWord = (uint)((sint6SH << bitOffset) & 0xffffffff);
 
-                packedSH[wordStart] |= firstWord;
+                output[wordStart] |= firstWord;
                 if (bitEnd > wordStart * 32 + 32)
                 {
                     uint secondWord = ((uint)sint6SH >> (32 - bitOffset)) & 0xffffffff;
-                    packedSH[wordStart + 1] |= secondWord;
+                    output[wordStart + 1] |= secondWord;
                 }
             }
-
-            return packedSH;
         }
     }
 }
