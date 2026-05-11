@@ -458,5 +458,87 @@ namespace Gsplat
                 }
             }
         }
+
+        // ─── Binary import cache ───────────────────────────────────────────────────
+
+        const uint CacheMagic = 0x43435347u; // "GSCC" little-endian
+        const uint CacheFormatVersion = 1u;
+
+        /// <summary>
+        /// Attempts to populate this asset's packed arrays from a previously saved cache
+        /// file. Returns true and leaves the asset fully loaded on success; returns false
+        /// (and leaves the asset unmodified) if the file is absent, corrupt, or version-
+        /// mismatched.
+        /// </summary>
+        public bool TryLoadFromCache(string cachePath)
+        {
+            if (!File.Exists(cachePath)) return false;
+            try
+            {
+                using var fs = new FileStream(cachePath, FileMode.Open, FileAccess.Read);
+                using var br = new BinaryReader(fs);
+
+                if (br.ReadUInt32() != CacheMagic) return false;
+                if (br.ReadUInt32() != CacheFormatVersion) return false;
+
+                SplatCount = br.ReadUInt32();
+                SHBands    = br.ReadByte();
+                br.ReadByte(); br.ReadByte(); br.ReadByte(); // 3-byte padding
+
+                var center = new Vector3(br.ReadSingle(), br.ReadSingle(), br.ReadSingle());
+                var size   = new Vector3(br.ReadSingle(), br.ReadSingle(), br.ReadSingle());
+                Bounds = new Bounds(center, size);
+
+                Allocate();
+
+                ReadExactBytes(fs, MemoryMarshal.AsBytes(PackedSplats.AsSpan()));
+                if (SHBands >= 1) ReadExactBytes(fs, MemoryMarshal.AsBytes(PackedSH1.AsSpan()));
+                if (SHBands >= 2) ReadExactBytes(fs, MemoryMarshal.AsBytes(PackedSH2.AsSpan()));
+                if (SHBands >= 3) ReadExactBytes(fs, MemoryMarshal.AsBytes(PackedSH3.AsSpan()));
+
+                return true;
+            }
+            catch
+            {
+                // Corrupt or incompatible cache — fall through to full reimport.
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Writes the current packed arrays to a binary cache file so that future imports
+        /// of the same asset can skip the expensive pack step.
+        /// </summary>
+        public void SaveToCache(string cachePath)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(cachePath)!);
+            using var fs = new FileStream(cachePath, FileMode.Create, FileAccess.Write);
+            using var bw = new BinaryWriter(fs);
+
+            bw.Write(CacheMagic);
+            bw.Write(CacheFormatVersion);
+            bw.Write(SplatCount);
+            bw.Write((byte)SHBands);
+            bw.Write((byte)0); bw.Write((byte)0); bw.Write((byte)0); // 3-byte padding
+
+            bw.Write(Bounds.center.x); bw.Write(Bounds.center.y); bw.Write(Bounds.center.z);
+            bw.Write(Bounds.size.x);   bw.Write(Bounds.size.y);   bw.Write(Bounds.size.z);
+
+            fs.Write(MemoryMarshal.AsBytes(PackedSplats.AsSpan()));
+            if (SHBands >= 1) fs.Write(MemoryMarshal.AsBytes(PackedSH1.AsSpan()));
+            if (SHBands >= 2) fs.Write(MemoryMarshal.AsBytes(PackedSH2.AsSpan()));
+            if (SHBands >= 3) fs.Write(MemoryMarshal.AsBytes(PackedSH3.AsSpan()));
+        }
+
+        static void ReadExactBytes(Stream stream, Span<byte> buffer)
+        {
+            int offset = 0;
+            while (offset < buffer.Length)
+            {
+                int read = stream.Read(buffer.Slice(offset));
+                if (read == 0) throw new EndOfStreamException("Unexpected end of Gsplat cache file");
+                offset += read;
+            }
+        }
     }
 }
