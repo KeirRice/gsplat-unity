@@ -64,8 +64,8 @@ namespace Gsplat
             swDecompress.Stop();
 
             var h = data.Header;
-            if (h.ShDegree > 3)
-                throw new NotSupportedException($"SPZ SH degree {h.ShDegree} is not supported (max 3)");
+            if (h.ShDegree > 4)
+                throw new NotSupportedException($"SPZ SH degree {h.ShDegree} is not supported (max 4)");
 
             SplatCount = h.NumPoints;
             SHBands = h.ShDegree;
@@ -75,7 +75,9 @@ namespace Gsplat
             Allocate();
 
             var ctx = new DecodeContext(data, sourceCoordinates, SHBands);
-            var tlShBand = new ThreadLocal<float[]>(() => new float[7 * 3]);
+            // Band 4 has 9 coefficients × 3 channels; reused each splat. Sized for the
+            // widest band so the same buffer serves bands 1–4.
+            var tlShBand = new ThreadLocal<float[]>(() => new float[9 * 3]);
 
             var gMin = Vector3.positiveInfinity;
             var gMax = Vector3.negativeInfinity;
@@ -180,6 +182,7 @@ namespace Gsplat
                 if (j == 1) PackSH1(shBandData, PackedSH1.AsSpan(i * 2, 2));
                 if (j == 2) PackSH2(shBandData, PackedSH2.AsSpan(i * 4, 4));
                 if (j == 3) PackSH3(shBandData, PackedSH3.AsSpan(i * 4, 4));
+                if (j == 4) PackSH4(shBandData, PackedSH4.AsSpan(i * 4, 4));
 
                 bandOffset += bandSize;
             }

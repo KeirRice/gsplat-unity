@@ -132,7 +132,7 @@ namespace Gsplat
     public abstract class GsplatAsset : ScriptableObject
     {
         public uint SplatCount;
-        public byte SHBands; // 0, 1, 2, or 3
+        public byte SHBands; // 0, 1, 2, 3, or 4 (4 only via SPZ v4)
         public Bounds Bounds;
         public abstract CompressionMode Compression { get; }
 

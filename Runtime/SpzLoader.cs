@@ -148,7 +148,6 @@ namespace Gsplat
 
         // v4: 32-byte plaintext header, optional extensions, TOC, then N zstd-compressed streams.
         // Stream order (numStreams == 6): positions, alphas, colors, scales, rotations, sh.
-        // This package caps SH at degree 3; degree-4 files are truncated at decode time.
         static SpzData LoadZstd(FileStream fs)
         {
             var hb = ReadExact(fs, V4HeaderSize);
@@ -186,21 +185,16 @@ namespace Gsplat
             fs.Position = tocByteOffset;
             var toc = ReadExact(fs, (int)tocBytes);
 
-            byte truncatedDegree = shDegree;
-            bool truncateSh = shDegree == 4;
-            if (truncateSh) truncatedDegree = 3;
-
             int n = ValidatePointCount(numPoints);
-            int shDimSrc = ShDim(shDegree);
-            int shDimDst = ShDim(truncatedDegree);
+            int shDim = ShDim(shDegree);
             var expectedSizes = new long[V4ExpectedStreams]
             {
-                (long)n * 9,             // positions: 24-bit fixed (v4 always)
-                n,                       // alphas
-                (long)n * 3,             // colors
-                (long)n * 3,             // scales
-                (long)n * 4,             // rotations: smallest-three (v4 always)
-                (long)n * shDimSrc * 3,  // sh (full src layout; truncated after decompression)
+                (long)n * 9,           // positions: 24-bit fixed (v4 always)
+                n,                     // alphas
+                (long)n * 3,           // colors
+                (long)n * 3,           // scales
+                (long)n * 4,           // rotations: smallest-three (v4 always)
+                (long)n * shDim * 3,   // sh
             };
 
             var streams = new byte[V4ExpectedStreams][];
@@ -254,16 +248,13 @@ namespace Gsplat
                 streams[i] = dst;
             }
 
-            if (truncateSh)
-                streams[5] = TruncateShTo3(streams[5], n, shDimSrc, shDimDst);
-
             return new SpzData
             {
                 Header = new SpzHeader
                 {
                     Version = version,
                     NumPoints = numPoints,
-                    ShDegree = truncatedDegree,
+                    ShDegree = shDegree,
                     FractionalBits = fractionalBits,
                     Flags = flags,
                 },
@@ -274,18 +265,6 @@ namespace Gsplat
                 Rotations = streams[4],
                 SH = streams[5],
             };
-        }
-
-        // Per-point SH layout is [R0,G0,B0, R1,G1,B1, ...] in band order (band 1, then band 2, ...),
-        // so keeping the first dstDim coefficients drops the trailing band-4 block.
-        static byte[] TruncateShTo3(byte[] sh, int numPoints, int srcDim, int dstDim)
-        {
-            int srcStride = srcDim * 3;
-            int dstStride = dstDim * 3;
-            var dst = new byte[(long)numPoints * dstStride];
-            for (int i = 0; i < numPoints; i++)
-                Buffer.BlockCopy(sh, i * srcStride, dst, i * dstStride, dstStride);
-            return dst;
         }
 
         static byte[] ReadExact(Stream stream, int count)

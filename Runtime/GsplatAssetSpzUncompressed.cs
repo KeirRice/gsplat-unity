@@ -22,8 +22,8 @@ namespace Gsplat
             swDecompress.Stop();
             var h = data.Header;
 
-            if (h.ShDegree > 3)
-                throw new System.NotSupportedException($"SPZ SH degree {h.ShDegree} is not supported (max 3)");
+            if (h.ShDegree > 4)
+                throw new System.NotSupportedException($"SPZ SH degree {h.ShDegree} is not supported (max 4)");
 
             SplatCount = h.NumPoints;
             SHBands = h.ShDegree;

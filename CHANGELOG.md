@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added support for the Niantic [SPZ](https://github.com/nianticlabs/spz) format (`.spz`). The `GsplatImporter` now also handles `.spz` assets, decoding into the existing Spark or Uncompressed pipelines. SPZ versions 1–4 are supported: v1–3 use the gzip container, and v4 uses the NGSP/ZSTD container (decoded via the vendored `ZstdSharp` library under `Runtime/Plugins/ZstdSharp/`). SPZ v4 files with SH degree 4 are truncated to degree 3 at import time, matching the pipeline's existing SH cap. A binary import cache under `Library/GsplatCache/` skips the decode/pack step on subsequent reimports.
+- Added support for the Niantic [SPZ](https://github.com/nianticlabs/spz) format (`.spz`). The `GsplatImporter` now also handles `.spz` assets, decoding into the existing Spark or Uncompressed pipelines. SPZ versions 1–4 are supported: v1–3 use the gzip container, and v4 uses the NGSP/ZSTD container (decoded via the vendored `ZstdSharp` library under `Runtime/Plugins/ZstdSharp/`). A binary import cache under `Library/GsplatCache/` skips the decode/pack step on subsequent reimports.
+
+- Added rendering support for SH degree 4 (band 4), available only for SPZ v4 files that carry it. Adds `PackSH4` (27 sint4 values → 4 uint32 per splat, matching the SPZ writer's `shRestBits=4` default precision), a new `_PackedSH4Buffer` GPU binding, an `SH_BANDS_4` shader variant, and band-4 evaluation in `EvalSH`. The `GsplatRenderer` SH degree slider's maximum now follows the bound asset's `SHBands` — a degree-3 PLY shows a 0–3 slider; a degree-4 SPZ shows 0–4. PLY import continues to cap at degree 3.
 
 - Added a `SourceCoordinates` option to `GsplatImporter`. Positions, rotation quaternions, and SH coefficients are converted from the source frame (e.g. RUB for 3DGS / SPZ) to Unity (RUF) at import time.
 

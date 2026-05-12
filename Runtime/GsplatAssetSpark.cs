@@ -44,12 +44,14 @@ namespace Gsplat
         [HideInInspector] public uint[] PackedSH1;
         [HideInInspector] public uint[] PackedSH2;
         [HideInInspector] public uint[] PackedSH3;
+        [HideInInspector] public uint[] PackedSH4;
         [HideInInspector] public uint4[] PackedSplats;
 
         static readonly int k_packedSplatsBuffer = Shader.PropertyToID("_PackedSplatsBuffer");
         static readonly int k_packedSH1Buffer = Shader.PropertyToID("_PackedSH1Buffer");
         static readonly int k_packedSH2Buffer = Shader.PropertyToID("_PackedSH2Buffer");
         static readonly int k_packedSH3Buffer = Shader.PropertyToID("_PackedSH3Buffer");
+        static readonly int k_packedSH4Buffer = Shader.PropertyToID("_PackedSH4Buffer");
         static readonly int k_splatCount = Shader.PropertyToID("_SplatCount");
         static readonly int k_matrixMv = Shader.PropertyToID("_MatrixMV");
         static readonly int k_depthBuffer = Shader.PropertyToID("_DepthBuffer");
@@ -64,6 +66,8 @@ namespace Gsplat
                 PackedSH2 = new uint[SplatCount * 4];
             if (SHBands >= 3)
                 PackedSH3 = new uint[SplatCount * 4];
+            if (SHBands >= 4)
+                PackedSH4 = new uint[SplatCount * 4];
         }
 
         public override GsplatResource CreateResource()
@@ -79,8 +83,10 @@ namespace Gsplat
                 res.PackedSH1Buffer.SetData(PackedSH1);
             if (SHBands >= 2)
                 res.PackedSH2Buffer.SetData(PackedSH2);
-            if (SHBands == 3)
+            if (SHBands >= 3)
                 res.PackedSH3Buffer.SetData(PackedSH3);
+            if (SHBands >= 4)
+                res.PackedSH4Buffer.SetData(PackedSH4);
         }
 
         protected override async Task _UploadDataAsync(GsplatResource resource)
@@ -99,6 +105,9 @@ namespace Gsplat
                         4 * batchSize);
                 if (SHBands >= 3)
                     res.PackedSH3Buffer.SetData(PackedSH3, 4 * (int)res.UploadedCount, 4 * (int)res.UploadedCount,
+                        4 * batchSize);
+                if (SHBands >= 4)
+                    res.PackedSH4Buffer.SetData(PackedSH4, 4 * (int)res.UploadedCount, 4 * (int)res.UploadedCount,
                         4 * batchSize);
 
                 res.UploadedCount += (uint)batchSize;
@@ -120,6 +129,8 @@ namespace Gsplat
                 propertyBlock.SetBuffer(k_packedSH2Buffer, res.PackedSH2Buffer);
             if (SHBands >= 3)
                 propertyBlock.SetBuffer(k_packedSH3Buffer, res.PackedSH3Buffer);
+            if (SHBands >= 4)
+                propertyBlock.SetBuffer(k_packedSH4Buffer, res.PackedSH4Buffer);
         }
 
         public override void ComputeDepth(CommandBuffer cmd, Matrix4x4 matrixMv,
@@ -430,6 +441,31 @@ namespace Gsplat
         }
 
         /// <summary>
+        /// Encode an array of 27 signed RGB SH4 coefficients (clamped to [-1,1]) into
+        /// an array of 4 uint32 values, where each coefficient is stored as a sint4.
+        /// Matches the SPZ writer's shRestBits=4 default precision so there is no
+        /// information loss vs the source SPZ data.
+        /// </summary>
+        protected static void PackSH4(float[] sh, Span<uint> output)
+        {
+            output.Clear();
+            for (var i = 0; i < 27; ++i)
+            {
+                float shScaled = sh[i] * 7.0f;
+                int shBounded = (int)Math.Round(Math.Max(-7.0f, Math.Min(7.0f, shScaled)));
+                int sint4SH = shBounded & 0x0f;
+                int bitStart = i * 4;
+                int wordStart = bitStart / 32;
+                int bitOffset = bitStart - wordStart * 32;
+                output[wordStart] |= (uint)(sint4SH << bitOffset);
+                // With 4-bit values and 32-bit words no value straddles a boundary
+                // (32 % 4 == 0); the carry branch is kept for symmetry with PackSH1/3.
+                if (bitOffset + 4 > 32)
+                    output[wordStart + 1] |= ((uint)sint4SH >> (32 - bitOffset));
+            }
+        }
+
+        /// <summary>
         /// Inspired from SparkJs encodeSh3Rgb implementation
         ///
         /// Encode an array of 21 signed RGB SH3 coefficients (clamped to [-1,1]) into
@@ -462,7 +498,8 @@ namespace Gsplat
         // ─── Binary import cache ───────────────────────────────────────────────────
 
         const uint CacheMagic = 0x43435347u; // "GSCC" little-endian
-        const uint CacheFormatVersion = 1u;
+        // v2: added optional PackedSH4 region (only present when SHBands == 4).
+        const uint CacheFormatVersion = 2u;
 
         /// <summary>
         /// Attempts to populate this asset's packed arrays from a previously saved cache
@@ -495,6 +532,7 @@ namespace Gsplat
                 if (SHBands >= 1) ReadExactBytes(fs, MemoryMarshal.AsBytes(PackedSH1.AsSpan()));
                 if (SHBands >= 2) ReadExactBytes(fs, MemoryMarshal.AsBytes(PackedSH2.AsSpan()));
                 if (SHBands >= 3) ReadExactBytes(fs, MemoryMarshal.AsBytes(PackedSH3.AsSpan()));
+                if (SHBands >= 4) ReadExactBytes(fs, MemoryMarshal.AsBytes(PackedSH4.AsSpan()));
 
                 return true;
             }
@@ -528,6 +566,7 @@ namespace Gsplat
             if (SHBands >= 1) fs.Write(MemoryMarshal.AsBytes(PackedSH1.AsSpan()));
             if (SHBands >= 2) fs.Write(MemoryMarshal.AsBytes(PackedSH2.AsSpan()));
             if (SHBands >= 3) fs.Write(MemoryMarshal.AsBytes(PackedSH3.AsSpan()));
+            if (SHBands >= 4) fs.Write(MemoryMarshal.AsBytes(PackedSH4.AsSpan()));
         }
 
         static void ReadExactBytes(Stream stream, Span<byte> buffer)
