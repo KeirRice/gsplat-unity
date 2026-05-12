@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added support for the Niantic [SPZ](https://github.com/nianticlabs/spz) format (`.spz`). The `GsplatImporter` now also handles `.spz` assets, decoding into the existing Spark or Uncompressed pipelines. SPZ versions 1–3 are supported (gzip); v4 (ZSTD) raises a clear `NotSupportedException`. A binary import cache under `Library/GsplatCache/` skips the decode/pack step on subsequent reimports.
+- Added support for the Niantic [SPZ](https://github.com/nianticlabs/spz) format (`.spz`). The `GsplatImporter` now also handles `.spz` assets, decoding into the existing Spark or Uncompressed pipelines. SPZ versions 1–4 are supported: v1–3 use the gzip container, and v4 uses the NGSP/ZSTD container (decoded via the vendored `ZstdSharp` library under `Runtime/Plugins/ZstdSharp/`). SPZ v4 files with SH degree 4 are truncated to degree 3 at import time, matching the pipeline's existing SH cap. A binary import cache under `Library/GsplatCache/` skips the decode/pack step on subsequent reimports.
 
 - Added a `SourceCoordinates` option to `GsplatImporter`. Positions, rotation quaternions, and SH coefficients are converted from the source frame (e.g. RUB for 3DGS / SPZ) to Unity (RUF) at import time.
 

@@ -69,7 +69,10 @@ namespace Gsplat.Editor
             catch (Exception e)
             {
                 if (GsplatSettings.Instance.ShowImportErrors)
-                    UnityEngine.Debug.LogError($"{ctx.assetPath} import error: {e.Message}");
+                {
+                    UnityEngine.Debug.LogError($"{ctx.assetPath} import error:");
+                    UnityEngine.Debug.LogException(e);
+                }
                 return;
             }
             finally

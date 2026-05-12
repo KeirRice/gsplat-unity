@@ -7,6 +7,7 @@
 using System;
 using System.IO;
 using System.IO.Compression;
+using Gsplat.Internal;
 using UnityEngine;
 
 namespace Gsplat
@@ -28,13 +29,24 @@ namespace Gsplat
         public byte[] Colors;     // NumPoints * 3 (quantized SH DC per channel)
         public byte[] Scales;     // NumPoints * 3 (quantized log-scale per axis)
         public byte[] Rotations;  // v1-2: NumPoints*3 (xyz as unsigned bytes, offset-encoded), v3+: NumPoints*4 (smallest-three)
-        public byte[] SH;         // NumPoints * ShDim * 3 (per point: [R_0..R_N, G_0..G_N, B_0..B_N])
+        public byte[] SH;         // NumPoints * ShDim * 3, layout per point: [R0,G0,B0, R1,G1,B1, ..., R_{Dim-1},G_{Dim-1},B_{Dim-1}]
     }
 
     internal static class SpzLoader
     {
         const uint SpzMagic = 0x5053474e; // "NGSP" little-endian
-        const uint MaxSupportedVersion = 3; // v4+ uses ZSTD, not supported
+        const int V4HeaderSize = 32;
+        const int V4ExpectedStreams = 6;
+        // Stream index → human-readable name, matching the order written by the C++ writer
+        // (load-spz.cc serializeNgsp). Used purely for error messages.
+        static readonly string[] V4StreamNames = { "positions", "alphas", "colors", "scales", "rotations", "sh" };
+        // Hard cap on splat count. 128M is well above any realistic scene and keeps
+        // (long)n * stride safe for every multiplication we do (worst-case stride is
+        // 72 bytes/point for degree-4 SH, so 128M * 72 ≪ int.MaxValue).
+        const uint MaxSupportedPointCount = 1u << 27;
+        // Matches the value hardcoded by the upstream C++ writer; reject anything else
+        // so a malformed/hostile fractionalBits doesn't silently rescale positions.
+        const byte MaxFractionalBits = 12;
 
         const float ColorScale = 0.15f;
         const float Sqrt1_2 = 0.70710678118f;
@@ -43,61 +55,81 @@ namespace Gsplat
         // Matches GsplatUtils.SHBandsToCoefficientCount.
         public static int ShDim(byte degree) => degree * (degree + 2);
 
+        static int ValidatePointCount(uint numPoints)
+        {
+            if (numPoints > MaxSupportedPointCount)
+                throw new NotSupportedException(
+                    $"SPZ: point count {numPoints} exceeds supported maximum {MaxSupportedPointCount}");
+            return (int)numPoints;
+        }
+
+        static void ValidateFractionalBits(byte fractionalBits)
+        {
+            if (fractionalBits > MaxFractionalBits)
+                throw new NotSupportedException(
+                    $"SPZ: fractionalBits {fractionalBits} exceeds supported maximum {MaxFractionalBits}");
+        }
+
         public static SpzData Load(string path)
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read);
+            if (fs.Length < 4)
+                throw new InvalidDataException($"{Path.GetFileName(path)} is too short to be an SPZ file");
 
-            // SPZ v1–3 are gzip-compressed; v4 dropped the gzip wrapper for a different
-            // container, so its raw bytes won't parse as gzip and the version field is
-            // not at a fixed offset. Peek the first 2 bytes for the gzip magic and produce
-            // a clear error before GZipStream throws an opaque format exception.
-            int b0 = fs.ReadByte();
-            int b1 = fs.ReadByte();
-            if (b0 != 0x1F || b1 != 0x8B)
-                throw new NotSupportedException(
-                    $"{Path.GetFileName(path)} is not a gzip-compressed SPZ file. " +
-                    "This may be SPZ v4 (which uses a different container and is not supported), " +
-                    "or the file is corrupt. Only SPZ v1–3 (gzip) are supported.");
+            var sniff = ReadExact(fs, 4);
             fs.Position = 0;
 
+            // v1–3: single gzip stream wrapping the 16-byte SPZ header + sequential attribute streams.
+            if (sniff[0] == 0x1F && sniff[1] == 0x8B) return LoadGzip(fs);
+
+            // v4: plaintext 32-byte header with "NGSP" magic, then optional extensions, TOC, zstd-per-attribute streams.
+            uint magic = BitConverter.ToUInt32(sniff, 0);
+            if (magic == SpzMagic) return LoadZstd(fs);
+
+            throw new NotSupportedException(
+                $"{Path.GetFileName(path)} is not a recognized SPZ file (no gzip or NGSP magic).");
+        }
+
+        // v1–3: gzip-wrapped payload.
+        static SpzData LoadGzip(FileStream fs)
+        {
             using var gz = new GZipStream(fs, System.IO.Compression.CompressionMode.Decompress);
 
             var headerBytes = new byte[16];
             if (gz.Read(headerBytes, 0, 16) != 16)
                 throw new InvalidDataException("SPZ file too short to contain header");
 
-            var header = ParseHeader(headerBytes);
+            var header = ParseHeaderGzip(headerBytes);
             return ReadStreams(gz, header);
         }
 
-        static SpzHeader ParseHeader(byte[] b)
+        static SpzHeader ParseHeaderGzip(byte[] b)
         {
             uint magic = BitConverter.ToUInt32(b, 0);
             if (magic != SpzMagic)
                 throw new InvalidDataException($"SPZ: bad magic 0x{magic:X8}, expected 0x{SpzMagic:X8}");
 
             uint version = BitConverter.ToUInt32(b, 4);
-            if (version < 1 || version > MaxSupportedVersion)
-            {
-                var msg = version > MaxSupportedVersion
-                    ? $"SPZ v{version} uses ZSTD compression which is not supported. Only v1-3 (gzip) are supported."
-                    : $"SPZ version {version} is not supported";
-                throw new NotSupportedException(msg);
-            }
+            if (version < 1 || version > 3)
+                throw new NotSupportedException(
+                    $"SPZ version {version} is not supported in the gzip container (expected 1–3).");
+
+            byte fractionalBits = b[13];
+            ValidateFractionalBits(fractionalBits);
 
             return new SpzHeader
             {
                 Version = version,
                 NumPoints = BitConverter.ToUInt32(b, 8),
                 ShDegree = b[12],
-                FractionalBits = b[13],
+                FractionalBits = fractionalBits,
                 Flags = b[14],
             };
         }
 
         static SpzData ReadStreams(Stream stream, SpzHeader h)
         {
-            int n = (int)h.NumPoints;
+            int n = ValidatePointCount(h.NumPoints);
             bool float16Pos = h.Version == 1;
             bool smallestThree = h.Version >= 3;
             int shDim = ShDim(h.ShDegree);
@@ -112,6 +144,148 @@ namespace Gsplat
                 Rotations = ReadExact(stream, smallestThree ? n * 4 : n * 3),
                 SH = ReadExact(stream, n * shDim * 3),
             };
+        }
+
+        // v4: 32-byte plaintext header, optional extensions, TOC, then N zstd-compressed streams.
+        // Stream order (numStreams == 6): positions, alphas, colors, scales, rotations, sh.
+        // This package caps SH at degree 3; degree-4 files are truncated at decode time.
+        static SpzData LoadZstd(FileStream fs)
+        {
+            var hb = ReadExact(fs, V4HeaderSize);
+            uint magic = BitConverter.ToUInt32(hb, 0);
+            if (magic != SpzMagic)
+                throw new InvalidDataException($"SPZ v4: bad magic 0x{magic:X8}");
+
+            uint version = BitConverter.ToUInt32(hb, 4);
+            if (version != 4)
+                throw new NotSupportedException($"SPZ NGSP container with version {version} is not supported (expected 4).");
+
+            uint numPoints = BitConverter.ToUInt32(hb, 8);
+            byte shDegree = hb[12];
+            byte fractionalBits = hb[13];
+            byte flags = hb[14];
+            byte numStreams = hb[15];
+            uint tocByteOffset = BitConverter.ToUInt32(hb, 16);
+            // hb[20..32] are reserved (must be zero); not validated.
+
+            if (shDegree > 4)
+                throw new NotSupportedException($"SPZ v4 SH degree {shDegree} is out of spec (max 4).");
+            ValidateFractionalBits(fractionalBits);
+            if (numStreams != V4ExpectedStreams)
+                throw new NotSupportedException(
+                    $"SPZ v4 with {numStreams} streams is not supported (expected {V4ExpectedStreams}).");
+            long tocBytes = (long)V4ExpectedStreams * 16;
+            if (tocByteOffset < V4HeaderSize)
+                throw new InvalidDataException($"SPZ v4: tocByteOffset {tocByteOffset} overlaps header.");
+            if (tocByteOffset + tocBytes > fs.Length)
+                throw new InvalidDataException(
+                    $"SPZ v4: tocByteOffset {tocByteOffset} + TOC size {tocBytes} is past EOF (file length {fs.Length}).");
+
+            // Extensions, if present, live between the header and tocByteOffset. We don't
+            // consume any defined extensions, so just seek past them.
+            fs.Position = tocByteOffset;
+            var toc = ReadExact(fs, (int)tocBytes);
+
+            byte truncatedDegree = shDegree;
+            bool truncateSh = shDegree == 4;
+            if (truncateSh) truncatedDegree = 3;
+
+            int n = ValidatePointCount(numPoints);
+            int shDimSrc = ShDim(shDegree);
+            int shDimDst = ShDim(truncatedDegree);
+            var expectedSizes = new long[V4ExpectedStreams]
+            {
+                (long)n * 9,             // positions: 24-bit fixed (v4 always)
+                n,                       // alphas
+                (long)n * 3,             // colors
+                (long)n * 3,             // scales
+                (long)n * 4,             // rotations: smallest-three (v4 always)
+                (long)n * shDimSrc * 3,  // sh (full src layout; truncated after decompression)
+            };
+
+            var streams = new byte[V4ExpectedStreams][];
+            using var zstd = new ZstdDecoderSession();
+            for (int i = 0; i < V4ExpectedStreams; i++)
+            {
+                string name = V4StreamNames[i];
+                ulong compressedSize = BitConverter.ToUInt64(toc, i * 16);
+                ulong uncompressedSize = BitConverter.ToUInt64(toc, i * 16 + 8);
+                if (uncompressedSize != (ulong)expectedSizes[i])
+                    throw new InvalidDataException(
+                        $"SPZ v4 stream {i} ({name}): TOC uncompressedSize {uncompressedSize} != expected {expectedSizes[i]}");
+                if (compressedSize > int.MaxValue || uncompressedSize > int.MaxValue)
+                    throw new InvalidDataException(
+                        $"SPZ v4 stream {i} ({name}): size exceeds 2GB limit");
+                // zstd's worst-case expansion is ZSTD_COMPRESSBOUND ≈ src + src/128 + ~512 bytes.
+                // Add 4 KB of headroom for frame metadata (header, dictionary id, checksum,
+                // multi-frame splits). Anything beyond this is a malformed or hostile file
+                // claiming a small uncompressed size but a huge compressed payload.
+                ulong maxCompressed = uncompressedSize + uncompressedSize / 128 + 4096;
+                if (compressedSize > maxCompressed)
+                    throw new InvalidDataException(
+                        $"SPZ v4 stream {i} ({name}): compressedSize {compressedSize} exceeds zstd worst-case bound " +
+                        $"{maxCompressed} for uncompressedSize {uncompressedSize}");
+
+                // Degenerate empty stream (numPoints == 0). Skip the zstd round-trip entirely
+                // rather than asking the decoder to write into a zero-length destination, which
+                // ZstdSharp has historically been brittle about.
+                if (uncompressedSize == 0)
+                {
+                    fs.Seek((long)compressedSize, SeekOrigin.Current);
+                    streams[i] = Array.Empty<byte>();
+                    continue;
+                }
+
+                var compressed = ReadExact(fs, (int)compressedSize);
+                var dst = new byte[(int)uncompressedSize];
+                int written;
+                try
+                {
+                    written = zstd.Decompress(compressed, dst);
+                }
+                catch (Exception e)
+                {
+                    throw new InvalidDataException(
+                        $"SPZ v4 stream {i} ({name}): zstd decompression failed: {e.Message}", e);
+                }
+                if (written != (int)uncompressedSize)
+                    throw new InvalidDataException(
+                        $"SPZ v4 stream {i} ({name}): zstd produced {written} bytes, expected {uncompressedSize}");
+                streams[i] = dst;
+            }
+
+            if (truncateSh)
+                streams[5] = TruncateShTo3(streams[5], n, shDimSrc, shDimDst);
+
+            return new SpzData
+            {
+                Header = new SpzHeader
+                {
+                    Version = version,
+                    NumPoints = numPoints,
+                    ShDegree = truncatedDegree,
+                    FractionalBits = fractionalBits,
+                    Flags = flags,
+                },
+                Positions = streams[0],
+                Alphas = streams[1],
+                Colors = streams[2],
+                Scales = streams[3],
+                Rotations = streams[4],
+                SH = streams[5],
+            };
+        }
+
+        // Per-point SH layout is [R0,G0,B0, R1,G1,B1, ...] in band order (band 1, then band 2, ...),
+        // so keeping the first dstDim coefficients drops the trailing band-4 block.
+        static byte[] TruncateShTo3(byte[] sh, int numPoints, int srcDim, int dstDim)
+        {
+            int srcStride = srcDim * 3;
+            int dstStride = dstDim * 3;
+            var dst = new byte[(long)numPoints * dstStride];
+            for (int i = 0; i < numPoints; i++)
+                Buffer.BlockCopy(sh, i * srcStride, dst, i * dstStride, dstStride);
+            return dst;
         }
 
         static byte[] ReadExact(Stream stream, int count)
