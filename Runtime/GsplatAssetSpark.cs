@@ -175,7 +175,7 @@ namespace Gsplat
             SplatCount = plyInfo.VertexCount;
             SHBands = GsplatUtils.CalcSHBandsFromSHPropertyCount(plyInfo.SHPropertyCount);
 
-            if (SHBands > 3 || GsplatUtils.SHBandsToCoefficientCount(SHBands) * 3 != plyInfo.SHPropertyCount)
+            if (SHBands > 4 || GsplatUtils.SHBandsToCoefficientCount(SHBands) * 3 != plyInfo.SHPropertyCount)
                 throw new NotSupportedException($"unexpected SH property count {plyInfo.SHPropertyCount}");
 
             if (plyInfo.PositionOffset == -1 || plyInfo.ColorOffset == -1 || plyInfo.OpacityOffset == -1 ||
@@ -191,7 +191,7 @@ namespace Gsplat
 
             Allocate();
             var buffer = new byte[plyInfo.PropertyCount * sizeof(float)];
-            var shBandData = new float[7 * 3]; // max band 3: 7 coeffs × 3 channels; reused each splat
+            var shBandData = new float[9 * 3]; // max band 4: 9 coeffs × 3 channels; reused each splat
             for (uint i = 0; i < plyInfo.VertexCount; i++)
             {
                 var readBytes = fs.Read(buffer);
@@ -214,6 +214,7 @@ namespace Gsplat
                     if (j == 1) PackSH1(shBandData, PackedSH1.AsSpan((int)i * 2, 2));
                     if (j == 2) PackSH2(shBandData, PackedSH2.AsSpan((int)i * 4, 4));
                     if (j == 3) PackSH3(shBandData, PackedSH3.AsSpan((int)i * 4, 4));
+                    if (j == 4) PackSH4(shBandData, PackedSH4.AsSpan((int)i * 4, 4));
 
                     shReadOffset += bandSize;
                 }
