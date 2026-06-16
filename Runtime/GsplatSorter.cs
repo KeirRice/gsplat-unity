@@ -137,10 +137,33 @@ namespace Gsplat
                 return false;
 
             m_activeGsplats.Clear();
-            foreach (var gs in m_gsplats.Where(gs => gs is { isActiveAndEnabled: true, Valid: true }))
+            foreach (var gs in m_gsplats.Where(ShouldRender))
                 m_activeGsplats.Add(gs);
 
             return m_activeGsplats.Count != 0;
+        }
+
+        // Splats are drawn via Graphics.RenderMeshPrimitives, which ignores scene-view culling and
+        // draws into every camera (including an isolated prefab stage). Honor the editor's hidden
+        // state ourselves so renderers the user has hidden (or that live outside the prefab being
+        // edited) don't leak into the prefab-stage view, or render while scene-visibility hides them.
+        static bool ShouldRender(IGsplat gs) =>
+            gs is { isActiveAndEnabled: true, Valid: true } && !HiddenInEditor(gs);
+
+        public static bool HiddenInEditor(IGsplat gs)
+        {
+#if UNITY_EDITOR
+            if (gs is Component comp)
+            {
+                var go = comp.gameObject;
+                if (UnityEditor.SceneVisibilityManager.instance.IsHidden(go, false))
+                    return true;
+                var stage = UnityEditor.SceneManagement.PrefabStageUtility.GetCurrentPrefabStage();
+                if (stage != null && go.scene != stage.scene)
+                    return true;
+            }
+#endif
+            return false;
         }
 
         // Decides scene-wide whether the global merge can run this frame. 
@@ -243,9 +266,12 @@ namespace Gsplat
                                   m_activeGsplats.Count >= 2;
             if (!GlobalRenderEnabled) return;
             m_activeGsplats.Clear();
-            foreach (var gs in m_gsplats.Where(gs => gs is { isActiveAndEnabled: true, Valid: true }))
+            foreach (var gs in m_gsplats.Where(ShouldRender))
                 m_activeGsplats.Add(gs);
-            GlobalRenderEnabled = GlobalRenderEnabled && CanRenderGlobally();
+            // Re-check the count: filtering out editor-hidden renderers (e.g. main-scene splats while
+            // a prefab stage is open) can drop below the 2-renderer threshold, in which case the
+            // per-renderer path should take over instead.
+            GlobalRenderEnabled = m_activeGsplats.Count >= 2 && CanRenderGlobally();
             if (!GlobalRenderEnabled) return;
             m_globalRenderer.Update(m_activeGsplats);
         }

@@ -164,8 +164,11 @@ namespace Gsplat
                 m_renderer.EvaluateRefreshRequired(SortMode, SortRefreshRate - 1, CutoutsRefreshRate - 1);
                 m_renderer.DispatchInitOrder(Cutouts, transform.localToWorldMatrix, CutoutsUpdateBounds);
                 // When the global sorter has merged all renderers into a single draw call,
-                // skip the per-renderer draw — GsplatSorter.DrawAll handles rendering.
-                if (!GsplatSorter.Instance.GlobalRenderEnabled)
+                // skip the per-renderer draw — GsplatSorter.DrawAll handles rendering. Also skip
+                // when the editor is hiding this renderer (scene-visibility toggle, or it lives
+                // outside the prefab currently being edited), since RenderMeshPrimitives would
+                // otherwise draw it into the isolated prefab-stage view.
+                if (!GsplatSorter.Instance.GlobalRenderEnabled && !GsplatSorter.HiddenInEditor(this))
                     m_renderer.Render(transform, gameObject.layer, GammaToLinear, SHDegree, Brightness,
                         1.0f - SplatDownscaleFactor, RenderOrder);
             }
